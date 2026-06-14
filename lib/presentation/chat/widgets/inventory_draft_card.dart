@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:uuid/uuid.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:iconsax/iconsax.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/theme/app_colors.dart';
@@ -897,18 +896,20 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
 
           return Padding(
             padding: const EdgeInsets.only(bottom: 12.0),
-            child: GlassBox(
-              blur: 20,
-              opacity: 0.1,
-              border: Border.all(
-                color: _isApproved 
-                    ? AppColors.success.withOpacity(0.3) 
-                    : (hasAlert
-                        ? AppColors.error.withOpacity(0.7)
-                        : (isRestock 
-                            ? AppColors.warning.withOpacity(0.4) 
-                            : AppColors.primary.withOpacity(0.3))),
-                width: (isRestock || hasAlert) ? 1.5 : 1.0,
+            child: Container(
+              decoration: BoxDecoration(
+                color: isDark ? Colors.white.withOpacity(0.05) : Colors.black.withOpacity(0.03),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _isApproved 
+                      ? AppColors.success.withOpacity(0.3) 
+                      : (hasAlert
+                          ? AppColors.error.withOpacity(0.7)
+                          : (isRestock 
+                              ? AppColors.warning.withOpacity(0.4) 
+                              : AppColors.primary.withOpacity(0.3))),
+                  width: (isRestock || hasAlert) ? 1.5 : 1.0,
+                ),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
@@ -1565,8 +1566,8 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                 ],
               ],
             ),
-          ).animate().fadeIn(delay: 300.ms).slideY(begin: 0.2),
+          ),
       ],
-    ).animate().fadeIn().slideX(begin: 0.1);
+    );
   }
 }

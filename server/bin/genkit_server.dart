@@ -719,6 +719,13 @@ Rules:
               'Content-Type': 'application/json',
             },
             body: jsonEncode(nvidiaRequest),
+          ).timeout(
+            const Duration(seconds: 75),
+            onTimeout: () => http.Response(
+              jsonEncode({'error': 'AI vision model timed out after 75 seconds. Try a clearer or smaller image.'}),
+              504,
+              headers: {'content-type': 'application/json'},
+            ),
           );
 
           if (nvidiaResponse.statusCode != 200) {

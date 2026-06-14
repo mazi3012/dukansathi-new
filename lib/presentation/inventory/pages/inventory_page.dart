@@ -1143,9 +1143,9 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
     try {
       pickedFile = await picker.pickImage(
         source: source,
-        imageQuality: 85,
-        maxWidth: 2048,
-        maxHeight: 2048,
+        imageQuality: 60,
+        maxWidth: 1200,
+        maxHeight: 1200,
       );
     } catch (e) {
       if (mounted) {
@@ -1191,6 +1191,31 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
 
                 // Step 2: Call NVIDIA vision API
                 setDialogState(() { currentStep = "AI is reading your bill...\n(Llama Vision Model)"; progress = 0.45; });
+
+                // Animate progress smoothly while waiting for AI response
+                bool awaitingAi = true;
+                final aiSteps = [
+                  "AI is reading your bill...",
+                  "Analyzing line items...",
+                  "Extracting product details...",
+                  "Almost there...",
+                ];
+                int stepIdx = 0;
+                () async {
+                  while (awaitingAi) {
+                    await Future.delayed(const Duration(seconds: 4));
+                    if (awaitingAi && dialogContext.mounted) {
+                      stepIdx = (stepIdx + 1).clamp(0, aiSteps.length - 1);
+                      if (progress < 0.75) {
+                        setDialogState(() {
+                          progress += 0.02;
+                          currentStep = aiSteps[stepIdx];
+                        });
+                      }
+                    }
+                  }
+                }();
+
                 final extractResponse = await http.post(
                   AppConfig.getApiUri('/api/extract-bill-image'),
                   headers: {'Content-Type': 'application/json'},
@@ -1198,7 +1223,8 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                     'imageBase64': base64Image,
                     'mimeType': mimeType,
                   }),
-                ).timeout(const Duration(seconds: 90));
+                ).timeout(const Duration(seconds: 120));
+                awaitingAi = false;
 
                 if (extractResponse.statusCode != 200) {
                   final errBody = jsonDecode(extractResponse.body);
