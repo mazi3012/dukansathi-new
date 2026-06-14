@@ -637,7 +637,7 @@ Future<void> main(List<String> arguments) async {
             return;
           }
 
-          final groqKey = Platform.environment['GROQ_API_KEY'] ?? '';
+          final groqKey = getEnv('GROQ_API_KEY') ?? '';
           if (groqKey.isEmpty) {
             request.response
               ..statusCode = 500
