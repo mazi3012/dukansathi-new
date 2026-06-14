@@ -637,17 +637,17 @@ Future<void> main(List<String> arguments) async {
             return;
           }
 
-          final nvidiaKey = Platform.environment['NVIDIA_API_KEY'] ?? '';
-          if (nvidiaKey.isEmpty) {
+          final groqKey = Platform.environment['GROQ_API_KEY'] ?? '';
+          if (groqKey.isEmpty) {
             request.response
               ..statusCode = 500
               ..headers.contentType = ContentType.json
-              ..write(jsonEncode({'error': 'NVIDIA_API_KEY not configured'}))
+              ..write(jsonEncode({'error': 'GROQ_API_KEY not configured'}))
               ..close();
             return;
           }
 
-          print('🔍 AI Bill Extraction: processing image (${imageBase64.length} chars base64)...');
+          print('🔍 AI Bill Extraction (Groq): processing image (${imageBase64.length} chars base64)...');
 
           // Build the vision prompt for bill extraction
           const systemPrompt = '''You are an expert Indian retail bill parser. 
@@ -688,8 +688,8 @@ Rules:
 - Clean product names: remove codes like "30PR10C10", batch numbers, but keep brand/flavor names
 - Include ALL products listed on the bill''';
 
-          final nvidiaRequest = {
-            'model': 'meta/llama-3.2-90b-vision-instruct',
+          final groqRequest = {
+            'model': 'meta-llama/llama-4-scout-17b-16e-instruct',
             'messages': [
               {
                 'role': 'user',
@@ -712,38 +712,38 @@ Rules:
             'max_tokens': 4096,
           };
 
-          final nvidiaResponse = await http.post(
-            Uri.parse('https://integrate.api.nvidia.com/v1/chat/completions'),
+          final groqResponse = await http.post(
+            Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
             headers: {
-              'Authorization': 'Bearer $nvidiaKey',
+              'Authorization': 'Bearer $groqKey',
               'Content-Type': 'application/json',
             },
-            body: jsonEncode(nvidiaRequest),
+            body: jsonEncode(groqRequest),
           ).timeout(
-            const Duration(seconds: 75),
+            const Duration(seconds: 30),
             onTimeout: () => http.Response(
-              jsonEncode({'error': 'AI vision model timed out after 75 seconds. Try a clearer or smaller image.'}),
+              jsonEncode({'error': 'AI vision model timed out after 30 seconds. Try a clearer or smaller image.'}),
               504,
               headers: {'content-type': 'application/json'},
             ),
           );
 
-          if (nvidiaResponse.statusCode != 200) {
-            print('❌ NVIDIA API Error: ${nvidiaResponse.body}');
+          if (groqResponse.statusCode != 200) {
+            print('❌ Groq Vision API Error: ${groqResponse.body}');
             request.response
               ..statusCode = 502
               ..headers.contentType = ContentType.json
               ..write(jsonEncode({
                 'error': 'AI model error',
-                'details': nvidiaResponse.body,
+                'details': groqResponse.body,
               }))
               ..close();
             return;
           }
 
-          final nvidiaData = jsonDecode(nvidiaResponse.body) as Map<String, dynamic>;
-          final rawContent = (nvidiaData['choices'] as List?)?.first?['message']?['content'] as String? ?? '';
-          print('🤖 NVIDIA Vision raw response:\n$rawContent');
+          final groqData = jsonDecode(groqResponse.body) as Map<String, dynamic>;
+          final rawContent = (groqData['choices'] as List?)?.first?['message']?['content'] as String? ?? '';
+          print('🤖 Groq Vision raw response:\n$rawContent');
 
           // Parse the JSON object from the AI response
           List<Map<String, dynamic>> extractedProducts = [];

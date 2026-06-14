@@ -1315,7 +1315,7 @@ class _InventoryPageState extends ConsumerState<InventoryPage> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      "Powered by Llama Vision",
+                      "Powered by Groq AI",
                       style: const TextStyle(
                         color: AppColors.success,
                         fontWeight: FontWeight.w600,
