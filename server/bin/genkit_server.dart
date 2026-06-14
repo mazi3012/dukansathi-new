@@ -673,8 +673,8 @@ Return a JSON object ONLY — no explanation, no markdown fences. The JSON objec
 
 For each product, extract:
 - "name": product name (string, clean it up, remove codes/batch numbers like "30PR10C10" or "8PR50C12")
-- "price": selling price/MRP per unit in INR (number, e.g. the printed pack MRP or standard retail price; if box rate is listed, MRP of 1 box/item)
-- "cost_price": actual cost/purchase price per unit/box in INR (number. IMPORTANT: This is the actual price paid by the shop owner per box/item. If the bill lists total net amount and box count, divide the net amount/subtotal by the quantity to get the true cost_price per unit/box. Do not confuse MRP with cost_price)
+- "price": suggest selling price/MRP per unit/box in INR (number. This is the tax-exclusive selling price. It should be computed as the catalog Rate (Incl. of Tax) divided by (1 + GST_rate/100). Example: If the catalog Rate is 300.00 and GST rate is 5%, the price is 300.00 / 1.05 = 285.71)
+- "cost_price": actual cost/purchase price per unit/box in INR (number. IMPORTANT: This is the tax-exclusive purchase price paid per box/unit. Calculate it by taking the line item's net taxable amount (typically from the 'Amount' or 'Taxable Value' column, which excludes GST) and dividing it by the quantity (box/pcs count). Do NOT use division factors like dividing by 1.15. Example: If 13 boxes cost a taxable amount of 3,157.10, the cost_price is 3157.10 / 13 = 242.85)
 - "stock_quantity": quantity of units/boxes purchased (integer, use the box count or item quantity purchased)
 - "unit": unit of measurement if specified or inferred (standardized to one of: "box", "pcs", "dozen", "packet", "kg", "litre", "ml", "g" — default is "pcs")
 - "category": best-guess category like "Ice Cream", "Grocery", "Beverages", "Dairy", "Snacks", "Hygiene", "General" (string)
@@ -685,8 +685,8 @@ For each product, extract:
 Rules:
 - Return ONLY a valid JSON object with "invoice_total" and "products" keys, no other text
 - If a field cannot be determined, use sensible defaults (price: 0, stock_quantity: 1, category: "General", gst_rate: 5)
-- "cost_price" = the true cost paid per item/box (e.g., net amount divided by quantity)
-- "price" = the suggested retail price or MRP of that unit (if not explicitly listed, compute as cost_price × 1.15)
+- "cost_price" = the tax-exclusive cost paid per item/box (e.g., net taxable amount divided by quantity)
+- "price" = the tax-exclusive catalog Rate (e.g., Rate (Incl. of Tax) divided by (1 + GST_rate/100))
 - Clean product names: remove codes like "30PR10C10", batch numbers, but keep brand/flavor names
 - If boxes are mentioned (e.g. "13.00 Box"), use that as stock_quantity
 - Include ALL products listed on the bill''';
