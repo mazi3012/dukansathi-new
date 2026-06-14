@@ -149,17 +149,22 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
 
   Future<void> fetchDashboardData() async {
     final shopId = UserSession().shopId;
+    debugPrint('[DashboardNotifier] fetchDashboardData started. shopId: $shopId');
     if (shopId == null || shopId.isEmpty) {
+      debugPrint('[DashboardNotifier] fetchDashboardData: shopId is null or empty. Stopping.');
       state = state.copyWith(isLoading: false);
       return;
     }
 
     final bool isInitialLoad = state.past7DaysSales.isEmpty || state.grossSales == 0;
+    debugPrint('[DashboardNotifier] isInitialLoad: $isInitialLoad, state.grossSales: ${state.grossSales}');
     state = state.copyWith(isLoading: isInitialLoad, hasError: false);
 
     try {
+      debugPrint('[DashboardNotifier] Aligning customer dues...');
       // 1. Proactively align any out-of-sync local balances to ensure perfect dashboard stats
       await _updateLocalCustomerDues(shopId);
+      debugPrint('[DashboardNotifier] Customer dues aligned. Fetching sales...');
 
       // 2. Fetch Total Sales locally
       final salesRes = await _localDb.queryAll(
@@ -432,6 +437,8 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
           ? netRevenueToday * 1.05 
           : (salesRes.isNotEmpty ? (netRevenue / salesRes.length) * 1.05 : 0.0);
 
+      debugPrint('[DashboardNotifier] Updating state with fetched stats. grossSales: $grossSales, netRevenue: $netRevenue, pendingApprovals: $pendingApprovals');
+
       state = state.copyWith(
         grossSales: grossSales,
         netRevenue: netRevenue,
@@ -451,8 +458,10 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
         predicted7DaysSales: predicted7DaysSales,
         aiAlerts: aiAlerts,
       );
-    } catch (e) {
-      debugPrint('[Dashboard] Fetch error: $e');
+      debugPrint('[DashboardNotifier] fetchDashboardData completed successfully.');
+    } catch (e, stack) {
+      debugPrint('[DashboardNotifier] fetchDashboardData CRITICAL ERROR: $e');
+      debugPrint('[DashboardNotifier] STACKTRACE: $stack');
       state = state.copyWith(isLoading: false, hasError: true);
     }
   }

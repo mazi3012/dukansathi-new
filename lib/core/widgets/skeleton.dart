@@ -68,7 +68,7 @@ class SkeletonCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Skeleton(height: 20, width: 20),
-          const Spacer(),
+          const SizedBox(height: 12),
           const Skeleton(height: 24, width: 80),
           const SizedBox(height: 8),
           const Skeleton(height: 14, width: 50),
