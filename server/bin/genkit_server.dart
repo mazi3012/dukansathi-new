@@ -653,18 +653,18 @@ Future<void> main(List<String> arguments) async {
           const systemPrompt = '''You are an expert Indian retail bill parser. 
 Your task is to extract product line items and the overall bill total amount from a vendor/wholesale invoice or bill photo.
 
-Return a JSON object ONLY — no explanation, no markdown fences. The JSON object MUST have this structure:
+Return a JSON object ONLY — no explanation, no markdown fences (like ```json). The JSON object MUST have this structure:
 {
   "invoice_total": 14607.39,
   "products": [
     {
-      "name": "product name",
-      "price": 100.0,
-      "cost_price": 80.0,
-      "stock_quantity": 12,
+      "name": "NEW CHOCOBAR CANDY",
+      "rate_incl_tax": 300.0,
+      "discount_percent": 15.0,
+      "stock_quantity": 13,
       "unit": "box",
-      "category": "Grocery",
-      "gst_rate": 18.0,
+      "category": "Ice Cream",
+      "gst_rate": 5.0,
       "confidence": 95.0,
       "uncertain_fields": []
     }
@@ -672,23 +672,20 @@ Return a JSON object ONLY — no explanation, no markdown fences. The JSON objec
 }
 
 For each product, extract:
-- "name": product name (string, clean it up, remove codes/batch numbers like "30PR10C10" or "8PR50C12")
-- "price": suggest selling price/MRP per unit/box in INR (number. This is the tax-exclusive selling price. It should be computed as the catalog Rate (Incl. of Tax) divided by (1 + GST_rate/100). Example: If the catalog Rate is 300.00 and GST rate is 5%, the price is 300.00 / 1.05 = 285.71)
-- "cost_price": actual cost/purchase price per unit/box in INR (number. IMPORTANT: This is the tax-exclusive purchase price paid per box/unit. Calculate it by taking the line item's net taxable amount (typically from the 'Amount' or 'Taxable Value' column, which excludes GST) and dividing it by the quantity (box/pcs count). Do NOT use division factors like dividing by 1.15. Example: If 13 boxes cost a taxable amount of 3,157.10, the cost_price is 3157.10 / 13 = 242.85)
-- "stock_quantity": quantity of units/boxes purchased (integer, use the box count or item quantity purchased)
-- "unit": unit of measurement if specified or inferred (standardized to one of: "box", "pcs", "dozen", "packet", "kg", "litre", "ml", "g" — default is "pcs")
+- "name": product name (string, clean it up, remove codes/batch numbers like "30PR10C10")
+- "rate_incl_tax": catalog rate or unit price of the box/item *including* tax (number, e.g. 300.00, 280.00. This is the rate before discount is applied)
+- "discount_percent": discount percentage for this product row (number, e.g. 15.0 for 15%. If no discount is listed, use 0)
+- "stock_quantity": quantity of units/boxes purchased (integer)
+- "unit": unit of measurement (standardized to one of: "box", "pcs", "dozen", "packet", "kg", "litre", "ml", "g" — default is "pcs")
 - "category": best-guess category like "Ice Cream", "Grocery", "Beverages", "Dairy", "Snacks", "Hygiene", "General" (string)
 - "gst_rate": GST percentage as a number (e.g. 5, 12, 18, 28 — from the bill's GST Rate column)
 - "confidence": confidence score as a percentage between 0 and 100 representing how clearly visible and certain the parsed row is (number, e.g. 95)
-- "uncertain_fields": array of strings listing any fields (like "price", "cost_price", "stock_quantity") that the AI is not 100% sure about due to blur, calculations, or ambiguous headings (array of strings, e.g. ["price"], or empty array [] if fully confident)
+- "uncertain_fields": array of strings listing any fields (like "rate_incl_tax", "stock_quantity") that the AI is not 100% sure about (array of strings, or empty array [] if fully confident)
 
 Rules:
-- Return ONLY a valid JSON object with "invoice_total" and "products" keys, no other text
-- If a field cannot be determined, use sensible defaults (price: 0, stock_quantity: 1, category: "General", gst_rate: 5)
-- "cost_price" = the tax-exclusive cost paid per item/box (e.g., net taxable amount divided by quantity)
-- "price" = the tax-exclusive catalog Rate (e.g., Rate (Incl. of Tax) divided by (1 + GST_rate/100))
+- Return ONLY a valid JSON object, no other text, no markdown styling.
+- Do NOT perform any arithmetic calculations (like dividing total amount by quantity or subtracting discounts) for cost_price or price. Just extract the raw Rate and Discount percentage exactly as printed on the bill.
 - Clean product names: remove codes like "30PR10C10", batch numbers, but keep brand/flavor names
-- If boxes are mentioned (e.g. "13.00 Box"), use that as stock_quantity
 - Include ALL products listed on the bill''';
 
           final nvidiaRequest = {
@@ -793,12 +790,41 @@ Rules:
               return 'pcs';
             }
 
-            // Normalize fields
+            // Normalize fields & calculate cost_price and price deterministically
             for (final p in extractedProducts) {
-              p['price'] = (p['price'] as num?)?.toDouble() ?? 0.0;
-              p['cost_price'] = (p['cost_price'] as num?)?.toDouble() ?? 0.0;
+              final double gstRate = (p['gst_rate'] as num?)?.toDouble() ?? 5.0;
+              final double rateInclTax = (p['rate_incl_tax'] as num?)?.toDouble() ?? 
+                                         (p['price'] as num?)?.toDouble() ?? 0.0;
+              final double discountPercent = (p['discount_percent'] as num?)?.toDouble() ?? 0.0;
+
+              // Calculate unit cost price (exclusive of tax)
+              double calculatedCostPrice = 0.0;
+              if (p.containsKey('cost_price') && p['cost_price'] is num && (p['cost_price'] as num) > 0) {
+                final rawCostPrice = (p['cost_price'] as num).toDouble();
+                final qty = (p['stock_quantity'] as num?)?.toInt() ?? 1;
+                // If it's a total row amount rather than unit rate, scale it by quantity
+                if (rawCostPrice > rateInclTax * 1.5 && qty > 1) {
+                  calculatedCostPrice = rawCostPrice / qty;
+                } else {
+                  calculatedCostPrice = rawCostPrice;
+                }
+              } else {
+                final unitCostInclTax = rateInclTax * (1.0 - (discountPercent / 100.0));
+                calculatedCostPrice = unitCostInclTax / (1.0 + (gstRate / 100.0));
+              }
+
+              // Calculate selling price (exclusive of tax)
+              double calculatedPrice = 0.0;
+              if (rateInclTax > 0) {
+                calculatedPrice = rateInclTax / (1.0 + (gstRate / 100.0));
+              } else {
+                calculatedPrice = (p['price'] as num?)?.toDouble() ?? 0.0;
+              }
+
+              p['price'] = double.parse(calculatedPrice.toStringAsFixed(2));
+              p['cost_price'] = double.parse(calculatedCostPrice.toStringAsFixed(2));
               p['stock_quantity'] = (p['stock_quantity'] as num?)?.toInt() ?? 1;
-              p['gst_rate'] = (p['gst_rate'] as num?)?.toDouble() ?? 5.0;
+              p['gst_rate'] = gstRate;
               p['category'] = (p['category'] as String?) ?? 'General';
               p['unit'] = normalizeUnit(p['unit'] as String?);
               p['confidence'] = (p['confidence'] as num?)?.toDouble() ?? 85.0;
