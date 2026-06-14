@@ -350,79 +350,81 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
         }
       }
 
-      // 2. Save/Update products locally in SQLite repository
-      final productRepo = ProductRepository();
-      final currentShopId = UserSession().shopId ?? 'default_shop';
+      // 2. Save/Update products locally in SQLite repository (only if not a server batch)
+      if (_batchId == null) {
+        final productRepo = ProductRepository();
+        final currentShopId = UserSession().shopId ?? 'default_shop';
 
-      for (final pMap in _products) {
-        final cleanMap = <String, dynamic>{};
-        final pData = Map<String, dynamic>.from(pMap as Map);
+        for (final pMap in _products) {
+          final cleanMap = <String, dynamic>{};
+          final pData = Map<String, dynamic>.from(pMap as Map);
 
-        final isRestock = pData['is_restock'] == true;
-        final existingId = pData['existing_product_id']?.toString();
+          final isRestock = pData['is_restock'] == true;
+          final existingId = pData['existing_product_id']?.toString();
 
-        if (isRestock && existingId != null && existingId.isNotEmpty) {
-          // It's a restock! We fetch existing product and add the quantity
-          final existingProduct = await productRepo.getProductById(existingId);
-          if (existingProduct != null) {
-            final newQty = existingProduct.stockQuantity + ((pData['stock_quantity'] ?? pData['quantity'] ?? 0) as num).toInt();
-            final updatedProduct = Product(
-              id: existingProduct.id,
-              shopId: existingProduct.shopId,
-              name: pData['name']?.toString() ?? existingProduct.name,
-              price: (pData['price'] as num?)?.toDouble() ?? existingProduct.price,
-              stockQuantity: newQty,
-              category: pData['category']?.toString() ?? existingProduct.category,
-              description: pData['description']?.toString() ?? existingProduct.description,
-              isService: existingProduct.isService,
-              gstRate: (pData['gst_rate'] as num?)?.toDouble() ?? existingProduct.gstRate,
-              hsnSacCode: pData['hsn_sac_code']?.toString() ?? existingProduct.hsnSacCode,
-              barcode: pData['barcode']?.toString() ?? existingProduct.barcode,
-              costPrice: (pData['cost_price'] as num?)?.toDouble() ?? existingProduct.costPrice,
-              metadata: existingProduct.metadata,
-              unit: pData['unit']?.toString() ?? existingProduct.unit,
-            );
-            await productRepo.saveProduct(updatedProduct);
-            continue;
+          if (isRestock && existingId != null && existingId.isNotEmpty) {
+            // It's a restock! We fetch existing product and add the quantity
+            final existingProduct = await productRepo.getProductById(existingId);
+            if (existingProduct != null) {
+              final newQty = existingProduct.stockQuantity + ((pData['stock_quantity'] ?? pData['quantity'] ?? 0) as num).toInt();
+              final updatedProduct = Product(
+                id: existingProduct.id,
+                shopId: existingProduct.shopId,
+                name: pData['name']?.toString() ?? existingProduct.name,
+                price: (pData['price'] as num?)?.toDouble() ?? existingProduct.price,
+                stockQuantity: newQty,
+                category: pData['category']?.toString() ?? existingProduct.category,
+                description: pData['description']?.toString() ?? existingProduct.description,
+                isService: existingProduct.isService,
+                gstRate: (pData['gst_rate'] as num?)?.toDouble() ?? existingProduct.gstRate,
+                hsnSacCode: pData['hsn_sac_code']?.toString() ?? existingProduct.hsnSacCode,
+                barcode: pData['barcode']?.toString() ?? existingProduct.barcode,
+                costPrice: (pData['cost_price'] as num?)?.toDouble() ?? existingProduct.costPrice,
+                metadata: existingProduct.metadata,
+                unit: pData['unit']?.toString() ?? existingProduct.unit,
+              );
+              await productRepo.saveProduct(updatedProduct);
+              continue;
+            }
           }
-        }
 
-        // New product insertion
-        cleanMap['id'] = pData['id']?.toString() ?? const Uuid().v4();
-        cleanMap['shop_id'] = pData['shop_id']?.toString() ?? pData['shopId']?.toString() ?? currentShopId;
-        cleanMap['name'] = pData['name']?.toString() ?? pData['item_name']?.toString() ?? 'Unnamed Product';
-        
-        final rawPrice = pData['price'] ?? pData['price_per_unit'] ?? 0.0;
-        cleanMap['price'] = rawPrice is num ? rawPrice.toDouble() : double.tryParse(rawPrice.toString()) ?? 0.0;
-        
-        final rawStock = pData['stock_quantity'] ?? pData['quantity'] ?? 0;
-        cleanMap['stock_quantity'] = rawStock is num ? rawStock.toInt() : int.tryParse(rawStock.toString()) ?? 0;
-        
-        cleanMap['category'] = pData['category']?.toString() ?? 'General';
-        cleanMap['description'] = pData['description']?.toString();
-        
-        final rawIsService = pData['is_service'] ?? pData['isService'] ?? false;
-        cleanMap['is_service'] = rawIsService is bool ? rawIsService : (rawIsService.toString().toLowerCase() == 'true' || rawIsService == 1);
-        
-        final rawGstRate = pData['gst_rate'] ?? pData['gst'] ?? 0.0;
-        cleanMap['gst_rate'] = rawGstRate is num ? rawGstRate.toDouble() : double.tryParse(rawGstRate.toString()) ?? 0.0;
-        
-        cleanMap['hsn_sac_code'] = pData['hsn_sac_code']?.toString() ?? pData['hsn_code']?.toString() ?? pData['hsnSacCode']?.toString();
-        cleanMap['barcode'] = pData['barcode']?.toString();
-        
-        final rawCostPrice = pData['cost_price'] ?? pData['cp'] ?? 0.0;
-        cleanMap['cost_price'] = rawCostPrice is num ? rawCostPrice.toDouble() : double.tryParse(rawCostPrice.toString()) ?? 0.0;
-        
-        cleanMap['unit'] = pData['unit']?.toString() ?? 'pcs';
-        
-        if (pData['metadata'] is Map) {
-          cleanMap['metadata'] = Map<String, dynamic>.from(pData['metadata']);
-        } else {
-          cleanMap['metadata'] = <String, dynamic>{};
-        }
+          // New product insertion
+          cleanMap['id'] = pData['id']?.toString() ?? const Uuid().v4();
+          cleanMap['shop_id'] = pData['shop_id']?.toString() ?? pData['shopId']?.toString() ?? currentShopId;
+          cleanMap['name'] = pData['name']?.toString() ?? pData['item_name']?.toString() ?? 'Unnamed Product';
+          
+          final rawPrice = pData['price'] ?? pData['price_per_unit'] ?? 0.0;
+          cleanMap['price'] = rawPrice is num ? rawPrice.toDouble() : double.tryParse(rawPrice.toString()) ?? 0.0;
+          
+          final rawStock = pData['stock_quantity'] ?? pData['quantity'] ?? 0;
+          cleanMap['stock_quantity'] = rawStock is num ? rawStock.toInt() : int.tryParse(rawStock.toString()) ?? 0;
+          
+          cleanMap['category'] = pData['category']?.toString() ?? 'General';
+          cleanMap['description'] = pData['description']?.toString();
+          
+          final rawIsService = pData['is_service'] ?? pData['isService'] ?? false;
+          cleanMap['is_service'] = rawIsService is bool ? rawIsService : (rawIsService.toString().toLowerCase() == 'true' || rawIsService == 1);
+          
+          final rawGstRate = pData['gst_rate'] ?? pData['gst'] ?? 0.0;
+          cleanMap['gst_rate'] = rawGstRate is num ? rawGstRate.toDouble() : double.tryParse(rawGstRate.toString()) ?? 0.0;
+          
+          cleanMap['hsn_sac_code'] = pData['hsn_sac_code']?.toString() ?? pData['hsn_code']?.toString() ?? pData['hsnSacCode']?.toString();
+          cleanMap['barcode'] = pData['barcode']?.toString();
+          
+          final rawCostPrice = pData['cost_price'] ?? pData['cp'] ?? 0.0;
+          cleanMap['cost_price'] = rawCostPrice is num ? rawCostPrice.toDouble() : double.tryParse(rawCostPrice.toString()) ?? 0.0;
+          
+          cleanMap['unit'] = pData['unit']?.toString() ?? 'pcs';
+          
+          if (pData['metadata'] is Map) {
+            cleanMap['metadata'] = Map<String, dynamic>.from(pData['metadata']);
+          } else {
+            cleanMap['metadata'] = <String, dynamic>{};
+          }
 
-        final product = Product.fromJson(cleanMap);
-        await productRepo.saveProduct(product);
+          final product = Product.fromJson(cleanMap);
+          await productRepo.saveProduct(product);
+        }
       }
 
       if (mounted) {
