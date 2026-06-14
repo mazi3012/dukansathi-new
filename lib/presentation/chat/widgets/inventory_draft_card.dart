@@ -106,17 +106,17 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
       }
 
       _nameControllers.add(TextEditingController(text: name.toString()));
-      _priceControllers.add(TextEditingController(text: price.toString()));
+      _priceControllers.add(TextEditingController(text: price > 0.0 ? price.toString() : ''));
       _costPriceControllers.add(TextEditingController(text: costPrice.toString()));
       _qtyControllers.add(TextEditingController(text: stock.toString()));
       _categoryControllers.add(TextEditingController(text: category.toString()));
 
       double profitPercent = 0.0;
-      if (costPrice > 0) {
+      if (costPrice > 0.0 && price > 0.0) {
         profitPercent = ((price - costPrice) / costPrice) * 100.0;
       }
       _profitPercentControllers.add(TextEditingController(
-        text: costPrice > 0 ? profitPercent.toStringAsFixed(1) : '0.0',
+        text: (costPrice > 0.0 && price > 0.0) ? profitPercent.toStringAsFixed(1) : '',
       ));
       _selectedUnits.add(unit);
     }

@@ -1027,7 +1027,15 @@ Future<Map<String, dynamic>> approveProductBatch({
       await supabase.from('products').insert(productsToInsert);
     }
     if (productsToUpdate.isNotEmpty) {
-      await supabase.from('products').upsert(productsToUpdate);
+      for (final update in productsToUpdate) {
+        final productId = update['id'] as String;
+        final updatePayload = Map<String, dynamic>.from(update)..remove('id')..remove('shop_id');
+        await supabase
+            .from('products')
+            .update(updatePayload)
+            .eq('id', productId)
+            .eq('shop_id', shopId);
+      }
     }
 
     await supabase

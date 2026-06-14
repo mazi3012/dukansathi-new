@@ -813,15 +813,8 @@ Rules:
                 calculatedCostPrice = unitCostInclTax / (1.0 + (gstRate / 100.0));
               }
 
-              // Calculate selling price (exclusive of tax)
-              double calculatedPrice = 0.0;
-              if (rateInclTax > 0) {
-                calculatedPrice = rateInclTax / (1.0 + (gstRate / 100.0));
-              } else {
-                calculatedPrice = (p['price'] as num?)?.toDouble() ?? 0.0;
-              }
-
-              p['price'] = double.parse(calculatedPrice.toStringAsFixed(2));
+              // Selling price must not be filled by AI, keep it for human (default to 0.0)
+              p['price'] = 0.0;
               p['cost_price'] = double.parse(calculatedCostPrice.toStringAsFixed(2));
               p['stock_quantity'] = (p['stock_quantity'] as num?)?.toInt() ?? 1;
               p['gst_rate'] = gstRate;
