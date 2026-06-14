@@ -281,7 +281,7 @@ class InvoicePdfGenerator {
                 ),
                 pw.SizedBox(height: 4),
                 pw.Text(
-                  '$businessType • State: $shopState',
+                  '$businessType | State: $shopState',
                   style: pw.TextStyle(color: PdfColors.grey700, fontSize: 9),
                 ),
                 if (gstNumber != null && gstNumber.isNotEmpty)

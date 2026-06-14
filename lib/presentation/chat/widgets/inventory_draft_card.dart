@@ -1048,7 +1048,7 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                                         ? "AI is uncertain about: ${uncertainFields.join(', ')}."
                                         : "Low confidence extraction. Please verify all fields.",
                                     style: TextStyle(
-                                      color: isDark ? Colors.white70 : Colors.black80,
+                                      color: isDark ? Colors.white70 : Colors.black87,
                                       fontSize: 10,
                                     ),
                                   ),
