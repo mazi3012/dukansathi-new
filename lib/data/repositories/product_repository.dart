@@ -89,6 +89,24 @@ class ProductRepository {
           .eq('shop_id', shopId);
 
       await _localDb.executeInTransaction((txn) async {
+        // 1. Delete local products not present in cloud
+        final cloudProductIds = cloudProducts.map((p) => p['id'] as String).toList();
+        if (cloudProductIds.isNotEmpty) {
+          final placeholders = List.filled(cloudProductIds.length, '?').join(',');
+          await txn.delete(
+            'products',
+            where: 'shop_id = ? AND id NOT IN ($placeholders)',
+            whereArgs: [shopId, ...cloudProductIds],
+          );
+        } else {
+          await txn.delete(
+            'products',
+            where: 'shop_id = ?',
+            whereArgs: [shopId],
+          );
+        }
+
+        // 2. Insert/replace from cloud
         for (var p in cloudProducts) {
           final mapped = Map<String, dynamic>.from(p);
           mapped['is_service'] = (mapped['is_service'] == true) ? 1 : 0;

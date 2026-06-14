@@ -28,6 +28,8 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
   String? _batchId;
   late List<dynamic> _products;
   List<Map<String, dynamic>> _editableProducts = [];
+  double? _invoiceTotal;
+  final TextEditingController _invoiceTotalController = TextEditingController();
 
   // Editing Controllers
   final List<TextEditingController> _nameControllers = [];
@@ -42,11 +44,30 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
   void initState() {
     super.initState();
     _parsePayload();
+    if (!_isApproved) {
+      _isEditing = true;
+      _initControllers();
+    }
+  }
+
+  @override
+  void didUpdateWidget(InventoryDraftCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.payload != oldWidget.payload) {
+      setState(() {
+        _parsePayload();
+        if (!_isApproved) {
+          _isEditing = true;
+          _initControllers();
+        }
+      });
+    }
   }
 
   @override
   void dispose() {
     _disposeControllers();
+    _invoiceTotalController.dispose();
     super.dispose();
   }
 
@@ -68,13 +89,21 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
 
   void _initControllers() {
     _disposeControllers();
+    
+    _invoiceTotalController.text = _invoiceTotal != null ? _invoiceTotal!.toStringAsFixed(2) : '';
+
+    final allowedUnits = const ['pcs', 'box', 'dozen', 'packet', 'kg', 'g', 'ltr', 'ml'];
     for (final p in _editableProducts) {
       final name = p['name'] ?? p['item_name'] ?? '';
       final price = (p['price'] ?? p['price_per_unit'] ?? 0.0).toDouble();
       final costPrice = (p['cost_price'] ?? p['cp'] ?? 0.0).toDouble();
       final stock = p['stock_quantity'] ?? p['quantity'] ?? 0;
       final category = p['category'] ?? 'General';
-      final unit = p['unit']?.toString() ?? 'pcs';
+      
+      String unit = p['unit']?.toString() ?? 'pcs';
+      if (!allowedUnits.contains(unit)) {
+        unit = 'pcs';
+      }
 
       _nameControllers.add(TextEditingController(text: name.toString()));
       _priceControllers.add(TextEditingController(text: price.toString()));
@@ -99,29 +128,48 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
     if (payload is List) {
       _products = payload;
       _batchId = null;
+      _invoiceTotal = null;
+      _invoiceTotalController.clear();
       debugPrint('[InventoryDraftCard] Parsed as List with ${_products.length} products');
     } else if (payload is Map) {
       _products = payload['items'] ?? payload['inventory'] ?? payload['products'] ?? [];
       _batchId = payload['batchId']?.toString() ?? payload['id']?.toString();
       _isApproved = payload['status'] == 'APPROVED';
+      final double? parsedTotal = (payload['invoice_total'] ?? payload['invoiceTotal']) != null
+          ? (payload['invoice_total'] ?? payload['invoiceTotal']).toDouble()
+          : null;
+      _invoiceTotal = parsedTotal;
+      _invoiceTotalController.text = parsedTotal != null ? parsedTotal.toStringAsFixed(2) : '';
       debugPrint('[InventoryDraftCard] Parsed as Map - products: ${_products.length}, batchId: $_batchId, status: ${payload['status']}');
     } else {
       _products = [];
+      _invoiceTotal = null;
+      _invoiceTotalController.clear();
       debugPrint('[InventoryDraftCard] Unknown payload type, defaulting to empty products');
     }
 
     _editableProducts = _products.map((p) => Map<String, dynamic>.from(p as Map)).toList();
   }
 
-  @override
-  void didUpdateWidget(InventoryDraftCard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.payload != oldWidget.payload) {
-      setState(() {
-        _parsePayload();
-      });
+  double _calculateTotalCost() {
+    double total = 0.0;
+    if (_isEditing) {
+      for (int i = 0; i < _editableProducts.length; i++) {
+        final cp = double.tryParse(_costPriceControllers[i].text) ?? 0.0;
+        final qty = int.tryParse(_qtyControllers[i].text) ?? 0;
+        total += cp * qty;
+      }
+    } else {
+      for (final p in _products) {
+        final cp = (p['cost_price'] ?? p['cp'] ?? 0.0).toDouble();
+        final qty = (p['stock_quantity'] ?? p['quantity'] ?? 0).toInt();
+        total += cp * qty;
+      }
     }
+    return total;
   }
+
+
 
   Future<void> _saveDraft() async {
     // Collect updated data from controllers
@@ -135,10 +183,13 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
       p['unit'] = _selectedUnits[i];
     }
 
+    final double? updatedInvoiceTotal = double.tryParse(_invoiceTotalController.text);
+
     if (_batchId == null) {
       // Local-only draft updates
       setState(() {
         _products = List<Map<String, dynamic>>.from(_editableProducts);
+        _invoiceTotal = updatedInvoiceTotal;
         _parsePayload();
         _isEditing = false;
       });
@@ -160,6 +211,7 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
         body: jsonEncode({
           'batchId': _batchId,
           'products': _editableProducts,
+          'invoice_total': updatedInvoiceTotal,
         }),
       );
 
@@ -168,6 +220,9 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
         if (resData['success'] == true) {
           setState(() {
             _products = resData['products'] ?? _editableProducts;
+            _invoiceTotal = resData['invoice_total'] != null 
+                ? (resData['invoice_total'] as num).toDouble() 
+                : updatedInvoiceTotal;
             _parsePayload();
             _isEditing = false;
           });
@@ -200,9 +255,85 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
   Future<void> _approveBatch() async {
     if (_isApproved) return;
 
+    final calculatedTotal = _calculateTotalCost();
+    final invoiceVal = _invoiceTotal ?? 0.0;
+    final double diff = (invoiceVal - calculatedTotal).abs();
+    final bool isReconciled = _invoiceTotal != null && diff < 0.1;
+
+    if (_invoiceTotal != null && !isReconciled) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: Theme.of(context).brightness == Brightness.dark ? AppColors.darkSurface : AppColors.lightBackground,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: const [
+              Icon(Iconsax.warning_2, color: AppColors.error, size: 28),
+              SizedBox(width: 12),
+              Text("Valuation Mismatch", style: TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Text(
+            "The calculated total cost (₹${calculatedTotal.toStringAsFixed(2)}) does not match the invoice total (₹${_invoiceTotal!.toStringAsFixed(2)}).\n\nAre you sure you want to approve and import this batch anyway?",
+            style: const TextStyle(fontSize: 14),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
+              child: const Text("Approve Anyway", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true) return;
+    }
+
     setState(() => _isApproving = true);
     final client = http.Client();
     try {
+      if (_isEditing) {
+        for (int i = 0; i < _editableProducts.length; i++) {
+          final p = _editableProducts[i];
+          p['name'] = _nameControllers[i].text.trim();
+          p['price'] = double.tryParse(_priceControllers[i].text) ?? 0.0;
+          p['cost_price'] = double.tryParse(_costPriceControllers[i].text) ?? 0.0;
+          p['stock_quantity'] = int.tryParse(_qtyControllers[i].text) ?? 0;
+          p['category'] = _categoryControllers[i].text.trim();
+          p['unit'] = _selectedUnits[i];
+        }
+
+        final double? updatedInvoiceTotal = double.tryParse(_invoiceTotalController.text);
+
+        if (_batchId != null) {
+          final updateResponse = await client.post(
+            AppConfig.getApiUri('/api/update-batch'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'batchId': _batchId,
+              'products': _editableProducts,
+              'invoice_total': updatedInvoiceTotal,
+            }),
+          );
+          if (updateResponse.statusCode == 200) {
+            final resData = jsonDecode(updateResponse.body);
+            if (resData['success'] == true) {
+              _products = resData['products'] ?? _editableProducts;
+              _invoiceTotal = resData['invoice_total'] != null 
+                  ? (resData['invoice_total'] as num).toDouble() 
+                  : updatedInvoiceTotal;
+            }
+          }
+        } else {
+          _products = List<Map<String, dynamic>>.from(_editableProducts);
+          _invoiceTotal = updatedInvoiceTotal;
+        }
+      }
+
       // 1. If batch ID exists on server, invoke approve-batch endpoint to ensure server consistency
       if (_batchId != null) {
         final response = await client.post(
@@ -324,6 +455,226 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
     }
   }
 
+  Widget _buildReconciliationCard() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final calculatedTotal = _calculateTotalCost();
+    final invoiceVal = _invoiceTotal ?? 0.0;
+    final double diff = (invoiceVal - calculatedTotal).abs();
+    final bool isReconciled = _invoiceTotal != null && diff < 0.1;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16.0),
+      child: GlassBox(
+        blur: 20,
+        opacity: 0.15,
+        border: Border.all(
+          color: isReconciled 
+              ? AppColors.success.withOpacity(0.4) 
+              : (_invoiceTotal == null ? AppColors.warning.withOpacity(0.4) : AppColors.error.withOpacity(0.5)),
+          width: 1.5,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "Financial Reconciliation",
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: isDark ? Colors.white : AppColors.lightOnSurface,
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: isReconciled
+                          ? AppColors.success.withOpacity(0.15)
+                          : (_invoiceTotal == null ? AppColors.warning.withOpacity(0.15) : AppColors.error.withOpacity(0.15)),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      isReconciled 
+                          ? "MATCHED" 
+                          : (_invoiceTotal == null ? "NO TOTAL SET" : "MISMATCH"),
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: isReconciled
+                            ? AppColors.success
+                            : (_invoiceTotal == null ? AppColors.warning : AppColors.error),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Calculated Cost Sum",
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: isDark ? Colors.white54 : Colors.black54,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          "₹${calculatedTotal.toStringAsFixed(2)}",
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: isDark ? Colors.white : AppColors.lightOnSurface,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 1,
+                    height: 40,
+                    color: isDark ? Colors.white10 : Colors.black12,
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Invoice Bill Total",
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: isDark ? Colors.white54 : Colors.black54,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        if (_isEditing)
+                          SizedBox(
+                            height: 32,
+                            child: TextFormField(
+                              controller: _invoiceTotalController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              decoration: InputDecoration(
+                                prefixText: "₹ ",
+                                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                border: const UnderlineInputBorder(),
+                                focusedBorder: UnderlineInputBorder(
+                                  borderSide: BorderSide(color: isReconciled ? AppColors.success : AppColors.primary),
+                                ),
+                              ),
+                              onChanged: (val) {
+                                setState(() {
+                                  _invoiceTotal = double.tryParse(val);
+                                });
+                              },
+                            ),
+                          )
+                        else
+                          Text(
+                            _invoiceTotal != null ? "₹${_invoiceTotal!.toStringAsFixed(2)}" : "Not Provided",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                              color: _invoiceTotal != null 
+                                  ? (isDark ? Colors.white : AppColors.lightOnSurface) 
+                                  : AppColors.error,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              if (isReconciled)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.success.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Iconsax.tick_circle, color: AppColors.success, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Audit Verified: Item costs perfectly reconcile with the bill total.",
+                          style: TextStyle(
+                            color: AppColors.success,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else if (_invoiceTotal == null)
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Iconsax.warning_2, color: AppColors.warning, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Invoice total is not set. Please enter the physical bill total to perform reconciliation.",
+                          style: TextStyle(
+                            color: isDark ? Colors.amber : Colors.amber.shade800,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Iconsax.warning_2, color: AppColors.error, size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Valuation Mismatch: The calculated total cost (₹${calculatedTotal.toStringAsFixed(2)}) deviates from the bill total (₹${_invoiceTotal!.toStringAsFixed(2)}) by ₹${diff.toStringAsFixed(2)}. Please verify item quantities and cost prices.",
+                          style: const TextStyle(
+                            color: AppColors.error,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_products.isEmpty) {
@@ -336,6 +687,12 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
     }
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    double totalConfidence = 0.0;
+    for (var p in _products) {
+      totalConfidence += (p['confidence'] ?? 85.0).toDouble();
+    }
+    double avgConfidence = _products.isNotEmpty ? totalConfidence / _products.length : 0.0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -358,8 +715,8 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                   const SizedBox(width: 8),
                   Text(
                     _isApproved 
-                        ? "Added to Inventory" 
-                        : (_isEditing ? "Editing Proposal" : "Bulk Product Proposal"),
+                        ? "Added to Inventory (${_products.length} items)" 
+                        : (_isEditing ? "Review & Edit Proposal (${_products.length} items)" : "Bulk Product Proposal (${_products.length} items)"),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
                   ),
                 ],
@@ -387,6 +744,130 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
           ),
         ),
 
+        // Extraction statistics row
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12.0, left: 4.0, right: 4.0),
+          child: Row(
+            children: [
+              Expanded(
+                child: GlassBox(
+                  blur: 10,
+                  opacity: 0.08,
+                  border: Border.all(
+                    color: (isDark ? Colors.white : Colors.black).withOpacity(0.1),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withOpacity(0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Iconsax.box_add, color: AppColors.primary, size: 14),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "EXTRACTED PRODUCTS",
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? Colors.white54 : Colors.black54,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                "${_products.length} Items",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? Colors.white : AppColors.lightOnSurface,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: GlassBox(
+                  blur: 10,
+                  opacity: 0.08,
+                  border: Border.all(
+                    color: (isDark ? Colors.white : Colors.black).withOpacity(0.1),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: (avgConfidence >= 80
+                                    ? AppColors.success
+                                    : (avgConfidence >= 50 ? Colors.orange : AppColors.error))
+                                .withOpacity(0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Iconsax.cpu,
+                            color: avgConfidence >= 80
+                                ? AppColors.success
+                                : (avgConfidence >= 50 ? Colors.orange : AppColors.error),
+                            size: 14,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "AVG AI CONFIDENCE",
+                                style: TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? Colors.white54 : Colors.black54,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                "${avgConfidence.toStringAsFixed(0)}%",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: avgConfidence >= 80
+                                      ? AppColors.success
+                                      : (avgConfidence >= 50 ? Colors.orange : AppColors.error),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Financial Reconciliation Status Card
+        _buildReconciliationCard(),
+
         // Product Cards List
         ...List.generate(_products.length, (index) {
           final product = _products[index];
@@ -397,8 +878,20 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
           final category = product['category'] ?? "General";
           final isRestock = product['is_restock'] == true;
 
+          // AI Confidence & Uncertainty indicators
+          final confidence = (product['confidence'] ?? 85.0).toDouble();
+          final uncertainFields = List<String>.from(product['uncertain_fields'] ?? []);
+          final hasAlert = confidence < 75.0 || uncertainFields.isNotEmpty;
+
           final themeColor = isRestock ? AppColors.warning : AppColors.success;
           final lightThemeColorSoft = isRestock ? Colors.amber.shade600.withOpacity(0.1) : AppColors.lightPrimarySoft;
+
+          final isNameUncertain = uncertainFields.contains('name');
+          final isCategoryUncertain = uncertainFields.contains('category');
+          final isQtyUncertain = uncertainFields.contains('stock_quantity') || uncertainFields.contains('quantity');
+          final isUnitUncertain = uncertainFields.contains('unit');
+          final isCostUncertain = uncertainFields.contains('cost_price') || uncertainFields.contains('cp');
+          final isPriceUncertain = uncertainFields.contains('price') || uncertainFields.contains('selling_price');
 
           return Padding(
             padding: const EdgeInsets.only(bottom: 12.0),
@@ -408,49 +901,109 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
               border: Border.all(
                 color: _isApproved 
                     ? AppColors.success.withOpacity(0.3) 
-                    : (isRestock 
-                        ? AppColors.warning.withOpacity(0.4) 
-                        : AppColors.primary.withOpacity(0.3)),
-                width: isRestock ? 1.5 : 1.0,
+                    : (hasAlert
+                        ? AppColors.error.withOpacity(0.7)
+                        : (isRestock 
+                            ? AppColors.warning.withOpacity(0.4) 
+                            : AppColors.primary.withOpacity(0.3))),
+                width: (isRestock || hasAlert) ? 1.5 : 1.0,
               ),
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Restock/New Tag Header
+                    // Restock/New Tag Header & AI Confidence
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: themeColor.withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: themeColor.withOpacity(0.3), width: 1),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
+                        Expanded(
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Icon(
-                                isRestock ? Iconsax.refresh : Iconsax.box,
-                                color: themeColor,
-                                size: 10,
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: themeColor.withOpacity(0.15),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: themeColor.withOpacity(0.3), width: 1),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      isRestock ? Iconsax.refresh : Iconsax.box,
+                                      color: themeColor,
+                                      size: 10,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      isRestock ? "RESTOCK" : "NEW PRODUCT",
+                                      style: TextStyle(
+                                        color: themeColor,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
-                              const SizedBox(width: 4),
-                              Text(
-                                isRestock ? "RESTOCK" : "NEW PRODUCT",
-                                style: TextStyle(
-                                  color: themeColor,
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.5,
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: (confidence >= 80
+                                      ? AppColors.success
+                                      : (confidence >= 50 ? Colors.orange : AppColors.error)).withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: (confidence >= 80
+                                        ? AppColors.success
+                                        : (confidence >= 50 ? Colors.orange : AppColors.error)).withOpacity(0.25),
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  "AI Confidence: ${confidence.toStringAsFixed(0)}%",
+                                  style: TextStyle(
+                                    color: confidence >= 80
+                                        ? AppColors.success
+                                        : (confidence >= 50 ? Colors.orange : AppColors.error),
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        if (isRestock)
+                        if (hasAlert)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: AppColors.error.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppColors.error.withOpacity(0.3), width: 1),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: const [
+                                Icon(Iconsax.warning_2, color: AppColors.error, size: 10),
+                                SizedBox(width: 4),
+                                Text(
+                                  "NEEDS REVIEW",
+                                  style: TextStyle(
+                                    color: AppColors.error,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        else if (isRestock)
                           Text(
                             "Already in Catalog",
                             style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -462,14 +1015,99 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                     ),
                     const SizedBox(height: 12),
 
+                    // High Alert Warning Banner
+                    if (hasAlert) ...[
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppColors.error.withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: AppColors.error.withOpacity(0.3), width: 1.5),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Iconsax.warning_2, color: AppColors.error, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    "HIGH ALERT: VERIFY DETAILS",
+                                    style: TextStyle(
+                                      color: AppColors.error,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    uncertainFields.isNotEmpty
+                                        ? "AI is uncertain about: ${uncertainFields.join(', ')}."
+                                        : "Low confidence extraction. Please verify all fields.",
+                                    style: TextStyle(
+                                      color: isDark ? Colors.white70 : Colors.black80,
+                                      fontSize: 10,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            if (!_isEditing && !_isApproved) ...[
+                              const SizedBox(width: 8),
+                              TextButton.icon(
+                                style: TextButton.styleFrom(
+                                  backgroundColor: AppColors.error.withOpacity(0.15),
+                                  foregroundColor: AppColors.error,
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                ),
+                                icon: const Icon(Iconsax.edit_2, size: 12),
+                                label: const Text(
+                                  "Edit Now",
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                onPressed: () {
+                                  setState(() {
+                                    _isEditing = true;
+                                    _initControllers();
+                                  });
+                                },
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+
                     // Content Area
                     if (_isEditing) ...[
                       // Editable Mode UI
                       TextFormField(
                         controller: _nameControllers[index],
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           labelText: "Product Name",
-                          prefixIcon: Icon(Iconsax.box, size: 18),
+                          prefixIcon: const Icon(Iconsax.box, size: 18),
+                          enabledBorder: isNameUncertain
+                              ? const OutlineInputBorder(
+                                  borderSide: BorderSide(color: AppColors.error, width: 1.5),
+                                )
+                              : null,
+                          focusedBorder: isNameUncertain
+                              ? const OutlineInputBorder(
+                                  borderSide: BorderSide(color: AppColors.error, width: 2.0),
+                                )
+                              : null,
+                          labelStyle: isNameUncertain ? const TextStyle(color: AppColors.error) : null,
+                          helperText: isNameUncertain ? "⚠️ Verify name on the invoice" : null,
+                          helperStyle: isNameUncertain ? const TextStyle(color: AppColors.error, fontSize: 10) : null,
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -478,9 +1116,22 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                           Expanded(
                             child: TextFormField(
                               controller: _categoryControllers[index],
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: "Category",
-                                prefixIcon: Icon(Iconsax.tag, size: 18),
+                                prefixIcon: const Icon(Iconsax.tag, size: 18),
+                                enabledBorder: isCategoryUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 1.5),
+                                      )
+                                    : null,
+                                focusedBorder: isCategoryUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 2.0),
+                                      )
+                                    : null,
+                                labelStyle: isCategoryUncertain ? const TextStyle(color: AppColors.error) : null,
+                                helperText: isCategoryUncertain ? "⚠️ Verify category" : null,
+                                helperStyle: isCategoryUncertain ? const TextStyle(color: AppColors.error, fontSize: 10) : null,
                               ),
                             ),
                           ),
@@ -492,7 +1143,9 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                                   onPressed: () {
                                     final currentVal = int.tryParse(_qtyControllers[index].text) ?? 0;
                                     if (currentVal > 1) {
-                                      _qtyControllers[index].text = (currentVal - 1).toString();
+                                      setState(() {
+                                        _qtyControllers[index].text = (currentVal - 1).toString();
+                                      });
                                     }
                                   },
                                   icon: const Icon(Iconsax.minus_cirlce, size: 20),
@@ -503,16 +1156,34 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                                     controller: _qtyControllers[index],
                                     keyboardType: TextInputType.number,
                                     textAlign: TextAlign.center,
-                                    decoration: const InputDecoration(
+                                    onChanged: (val) {
+                                      setState(() {});
+                                    },
+                                    decoration: InputDecoration(
                                       labelText: "Quantity",
                                       contentPadding: EdgeInsets.zero,
+                                      enabledBorder: isQtyUncertain
+                                          ? const UnderlineInputBorder(
+                                              borderSide: BorderSide(color: AppColors.error, width: 1.5),
+                                            )
+                                          : null,
+                                      focusedBorder: isQtyUncertain
+                                          ? const UnderlineInputBorder(
+                                              borderSide: BorderSide(color: AppColors.error, width: 2.0),
+                                            )
+                                          : null,
+                                      labelStyle: isQtyUncertain ? const TextStyle(color: AppColors.error) : null,
+                                      helperText: isQtyUncertain ? "⚠️ Verify qty" : null,
+                                      helperStyle: isQtyUncertain ? const TextStyle(color: AppColors.error, fontSize: 10) : null,
                                     ),
                                   ),
                                 ),
                                 IconButton(
                                   onPressed: () {
                                     final currentVal = int.tryParse(_qtyControllers[index].text) ?? 0;
-                                    _qtyControllers[index].text = (currentVal + 1).toString();
+                                    setState(() {
+                                      _qtyControllers[index].text = (currentVal + 1).toString();
+                                    });
                                   },
                                   icon: const Icon(Iconsax.add_circle, size: 20),
                                   color: AppColors.success,
@@ -527,17 +1198,31 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                           Expanded(
                             child: DropdownButtonFormField<String>(
                               value: _selectedUnits[index],
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: "Unit",
-                                prefixIcon: Icon(Iconsax.weight, size: 18),
+                                prefixIcon: const Icon(Iconsax.weight, size: 18),
+                                enabledBorder: isUnitUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 1.5),
+                                      )
+                                    : null,
+                                focusedBorder: isUnitUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 2.0),
+                                      )
+                                    : null,
+                                labelStyle: isUnitUncertain ? const TextStyle(color: AppColors.error) : null,
+                                helperText: isUnitUncertain ? "⚠️ Verify unit" : null,
+                                helperStyle: isUnitUncertain ? const TextStyle(color: AppColors.error, fontSize: 10) : null,
                               ),
                               items: const [
                                 DropdownMenuItem(value: 'pcs', child: Text('pcs')),
                                 DropdownMenuItem(value: 'box', child: Text('box')),
                                 DropdownMenuItem(value: 'dozen', child: Text('dozen')),
+                                DropdownMenuItem(value: 'packet', child: Text('packet')),
                                 DropdownMenuItem(value: 'kg', child: Text('kg')),
                                 DropdownMenuItem(value: 'g', child: Text('g')),
-                                DropdownMenuItem(value: 'l', child: Text('l')),
+                                DropdownMenuItem(value: 'ltr', child: Text('ltr')),
                                 DropdownMenuItem(value: 'ml', child: Text('ml')),
                               ],
                               onChanged: (val) {
@@ -554,15 +1239,29 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                             child: TextFormField(
                               controller: _costPriceControllers[index],
                               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: "Cost Price",
                                 prefixText: "₹ ",
+                                enabledBorder: isCostUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 1.5),
+                                      )
+                                    : null,
+                                focusedBorder: isCostUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 2.0),
+                                      )
+                                    : null,
+                                labelStyle: isCostUncertain ? const TextStyle(color: AppColors.error) : null,
+                                helperText: isCostUncertain ? "⚠️ Verify cost" : null,
+                                helperStyle: isCostUncertain ? const TextStyle(color: AppColors.error, fontSize: 10) : null,
                               ),
                               onChanged: (val) {
                                 final cp = double.tryParse(val) ?? 0.0;
                                 final pct = double.tryParse(_profitPercentControllers[index].text) ?? 0.0;
                                 final sp = cp * (1 + pct / 100.0);
                                 _priceControllers[index].text = sp.toStringAsFixed(2);
+                                setState(() {});
                               },
                             ),
                           ),
@@ -584,6 +1283,7 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                                 final cp = double.tryParse(_costPriceControllers[index].text) ?? 0.0;
                                 final sp = cp * (1 + pct / 100.0);
                                 _priceControllers[index].text = sp.toStringAsFixed(2);
+                                setState(() {});
                               },
                             ),
                           ),
@@ -592,9 +1292,22 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                             child: TextFormField(
                               controller: _priceControllers[index],
                               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: "Selling Price",
                                 prefixText: "₹ ",
+                                enabledBorder: isPriceUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 1.5),
+                                      )
+                                    : null,
+                                focusedBorder: isPriceUncertain
+                                    ? const OutlineInputBorder(
+                                        borderSide: BorderSide(color: AppColors.error, width: 2.0),
+                                      )
+                                    : null,
+                                labelStyle: isPriceUncertain ? const TextStyle(color: AppColors.error) : null,
+                                helperText: isPriceUncertain ? "⚠️ Verify price" : null,
+                                helperStyle: isPriceUncertain ? const TextStyle(color: AppColors.error, fontSize: 10) : null,
                               ),
                               onChanged: (val) {
                                 final sp = double.tryParse(val) ?? 0.0;
@@ -603,6 +1316,7 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                                   final pct = ((sp - cp) / cp) * 100.0;
                                   _profitPercentControllers[index].text = pct.toStringAsFixed(1);
                                 }
+                                setState(() {});
                               },
                             ),
                           ),
@@ -707,6 +1421,7 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                 if (_isEditing) ...[
                   // Cancel Edit Button
                   Expanded(
+                    flex: 1,
                     child: OutlinedButton.icon(
                       onPressed: () {
                         setState(() {
@@ -722,44 +1437,79 @@ class _InventoryDraftCardState extends State<InventoryDraftCard> {
                       icon: const Icon(Iconsax.close_circle, color: AppColors.error, size: 18),
                       label: const Text(
                         "Cancel", 
-                        style: TextStyle(color: AppColors.error, fontWeight: FontWeight.bold),
+                        style: TextStyle(color: AppColors.error, fontWeight: FontWeight.bold, fontSize: 12),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 8),
                   // Save Draft Button
                   Expanded(
+                    flex: 1,
+                    child: OutlinedButton.icon(
+                      onPressed: _isSavingDraft ? null : _saveDraft,
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        side: BorderSide(color: AppColors.primary.withOpacity(0.5)),
+                      ),
+                      icon: _isSavingDraft
+                          ? const SizedBox(
+                              height: 16,
+                              width: 16,
+                              child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
+                            )
+                          : const Icon(Iconsax.document_filter, color: AppColors.primary, size: 18),
+                      label: const Text(
+                        "Save Draft", 
+                        style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Approve & Import Button
+                  Expanded(
+                    flex: 2,
                     child: Container(
                       decoration: BoxDecoration(
                         gradient: AppColors.primaryGradient,
                         borderRadius: BorderRadius.circular(12),
                         boxShadow: [
                           BoxShadow(
-                            color: AppColors.primary.withOpacity(0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 3),
+                            color: AppColors.primary.withOpacity(0.4),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
                           ),
                         ],
                       ),
-                      child: ElevatedButton.icon(
-                        onPressed: _isSavingDraft ? null : _saveDraft,
+                      child: ElevatedButton(
+                        onPressed: _isApproving ? null : _approveBatch,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           shadowColor: Colors.transparent,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        icon: _isSavingDraft
+                        child: _isApproving
                             ? const SizedBox(
-                                height: 16,
-                                width: 16,
+                                height: 20, 
+                                width: 20, 
                                 child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                               )
-                            : const Icon(Iconsax.document_filter, color: Colors.white, size: 18),
-                        label: const Text(
-                          "Save Changes", 
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        ),
+                            : Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Icon(Iconsax.add_square, color: Colors.white, size: 18),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    "Approve & Import", 
+                                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                      color: Colors.white, 
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
                       ),
                     ),
                   ),

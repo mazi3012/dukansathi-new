@@ -1053,6 +1053,7 @@ Future<Map<String, dynamic>> approveProductBatch({
 Future<Map<String, dynamic>> updateProductBatchDraft({
   required String batchId,
   required List<Map<String, dynamic>> products,
+  double? invoiceTotal,
 }) async {
   try {
     final batchRows = await supabase
@@ -1071,17 +1072,25 @@ Future<Map<String, dynamic>> updateProductBatchDraft({
       products: products,
     );
 
-    await supabase
+    final updateData = <String, dynamic>{
+      'proposed_products': enrichedProducts,
+      'updated_at': DateTime.now().toIso8601String(),
+    };
+    if (invoiceTotal != null) {
+      updateData['invoice_total'] = invoiceTotal;
+    }
+
+    final updatedRow = await supabase
         .from('draft_product_batches')
-        .update({
-          'proposed_products': enrichedProducts,
-          'updated_at': DateTime.now().toIso8601String(),
-        })
-        .eq('id', batchId);
+        .update(updateData)
+        .eq('id', batchId)
+        .select('invoice_total')
+        .single();
 
     return {
       'success': true,
       'products': enrichedProducts,
+      'invoice_total': (updatedRow as Map)['invoice_total'],
     };
   } catch (e) {
     print('Error in updateProductBatchDraft: $e');

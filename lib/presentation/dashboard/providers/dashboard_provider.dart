@@ -256,9 +256,11 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
       final averageOrderValue = salesRes.isNotEmpty ? netRevenue / salesRes.length : 0.0;
 
       // 4. Linear Regression Trend Forecast (Machine Learning Regression)
-      final predicted7DaysSales = List<double>.filled(7, 0.0);
+      // We only forecast if we have sales on at least 3 distinct days to avoid misleading linear regression slopes from a single transaction.
+      final predicted7DaysSales = <double>[];
+      final int activeDays = past7DaysSales.where((v) => v > 0.0).length;
       
-      if (salesRes.isNotEmpty) {
+      if (salesRes.isNotEmpty && activeDays >= 3) {
         double sumX = 0;
         double sumY = 0;
         double sumXY = 0;
@@ -290,7 +292,7 @@ class DashboardNotifier extends StateNotifier<DashboardState> {
           double predictedVal = m * projectedDay + c;
           final double seasonality = 1.0 + (i % 2 == 0 ? 0.05 : -0.03); // add natural wave variation
           predictedVal *= seasonality;
-          predicted7DaysSales[i] = predictedVal.clamp(0.0, 1000000.0);
+          predicted7DaysSales.add(predictedVal.clamp(0.0, 1000000.0));
         }
       }
 

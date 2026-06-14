@@ -604,10 +604,12 @@ Future<void> main(List<String> arguments) async {
           if (batchId == null) throw Exception("Missing batchId");
           
           final products = data['products'] as List<dynamic>;
+          final invoiceTotal = (data['invoice_total'] ?? data['invoiceTotal']) as num?;
           
           final result = await updateProductBatchDraft(
             batchId: batchId,
             products: products.map((p) => Map<String, dynamic>.from(p as Map)).toList(),
+            invoiceTotal: invoiceTotal?.toDouble(),
           );
           
           request.response
@@ -649,23 +651,42 @@ Future<void> main(List<String> arguments) async {
 
           // Build the vision prompt for bill extraction
           const systemPrompt = '''You are an expert Indian retail bill parser. 
-Your task is to extract product line items from a vendor/wholesale invoice or bill photo.
+Your task is to extract product line items and the overall bill total amount from a vendor/wholesale invoice or bill photo.
 
-Extract each product and return a JSON array ONLY — no explanation, no markdown fences.
+Return a JSON object ONLY — no explanation, no markdown fences. The JSON object MUST have this structure:
+{
+  "invoice_total": 14607.39,
+  "products": [
+    {
+      "name": "product name",
+      "price": 100.0,
+      "cost_price": 80.0,
+      "stock_quantity": 12,
+      "unit": "box",
+      "category": "Grocery",
+      "gst_rate": 18.0,
+      "confidence": 95.0,
+      "uncertain_fields": []
+    }
+  ]
+}
 
 For each product, extract:
-- "name": product name (string, clean it up, remove codes/batch numbers)
-- "price": selling price per unit in INR (number, use Rate/Price column; if tax-inclusive, extract base rate)
-- "cost_price": cost/purchase price per unit in INR (number, same as "rate" from the bill — this IS the cost to the shop owner)
-- "stock_quantity": quantity purchased/received (integer, use Quantity column — boxes × units per box if needed, else just box count)
+- "name": product name (string, clean it up, remove codes/batch numbers like "30PR10C10" or "8PR50C12")
+- "price": selling price/MRP per unit in INR (number, e.g. the printed pack MRP or standard retail price; if box rate is listed, MRP of 1 box/item)
+- "cost_price": actual cost/purchase price per unit/box in INR (number. IMPORTANT: This is the actual price paid by the shop owner per box/item. If the bill lists total net amount and box count, divide the net amount/subtotal by the quantity to get the true cost_price per unit/box. Do not confuse MRP with cost_price)
+- "stock_quantity": quantity of units/boxes purchased (integer, use the box count or item quantity purchased)
+- "unit": unit of measurement if specified or inferred (standardized to one of: "box", "pcs", "dozen", "packet", "kg", "litre", "ml", "g" — default is "pcs")
 - "category": best-guess category like "Ice Cream", "Grocery", "Beverages", "Dairy", "Snacks", "Hygiene", "General" (string)
 - "gst_rate": GST percentage as a number (e.g. 5, 12, 18, 28 — from the bill's GST Rate column)
+- "confidence": confidence score as a percentage between 0 and 100 representing how clearly visible and certain the parsed row is (number, e.g. 95)
+- "uncertain_fields": array of strings listing any fields (like "price", "cost_price", "stock_quantity") that the AI is not 100% sure about due to blur, calculations, or ambiguous headings (array of strings, e.g. ["price"], or empty array [] if fully confident)
 
 Rules:
-- Return ONLY a valid JSON array, no other text
+- Return ONLY a valid JSON object with "invoice_total" and "products" keys, no other text
 - If a field cannot be determined, use sensible defaults (price: 0, stock_quantity: 1, category: "General", gst_rate: 5)
-- "cost_price" = the rate on the bill (what shop owner pays)
-- "price" = cost_price × 1.15 rounded (suggested selling price with ~15% margin) if no selling price listed
+- "cost_price" = the true cost paid per item/box (e.g., net amount divided by quantity)
+- "price" = the suggested retail price or MRP of that unit (if not explicitly listed, compute as cost_price × 1.15)
 - Clean product names: remove codes like "30PR10C10", batch numbers, but keep brand/flavor names
 - If boxes are mentioned (e.g. "13.00 Box"), use that as stock_quantity
 - Include ALL products listed on the bill''';
@@ -720,8 +741,9 @@ Rules:
           final rawContent = (nvidiaData['choices'] as List?)?.first?['message']?['content'] as String? ?? '';
           print('🤖 NVIDIA Vision raw response:\n$rawContent');
 
-          // Parse the JSON array from the AI response
+          // Parse the JSON object from the AI response
           List<Map<String, dynamic>> extractedProducts = [];
+          double invoiceTotal = 0.0;
           try {
             // Strip markdown code fences if present
             var cleaned = rawContent.trim();
@@ -729,17 +751,47 @@ Rules:
             cleaned = cleaned.replaceAll(RegExp(r'\s*```\s*$', multiLine: true), '');
             cleaned = cleaned.trim();
 
-            // Find the JSON array boundaries
-            final startIdx = cleaned.indexOf('[');
-            final endIdx = cleaned.lastIndexOf(']');
-            if (startIdx != -1 && endIdx != -1 && endIdx > startIdx) {
-              cleaned = cleaned.substring(startIdx, endIdx + 1);
+            final startBrace = cleaned.indexOf('{');
+            final startBracket = cleaned.indexOf('[');
+
+            if (startBrace != -1 && (startBracket == -1 || startBrace < startBracket)) {
+              // It's a JSON object
+              final endIdx = cleaned.lastIndexOf('}');
+              if (endIdx != -1) {
+                cleaned = cleaned.substring(startBrace, endIdx + 1);
+              }
+              final parsed = jsonDecode(cleaned) as Map<String, dynamic>;
+              invoiceTotal = (parsed['invoice_total'] as num?)?.toDouble() ?? 0.0;
+              final productsList = parsed['products'] as List<dynamic>? ?? [];
+              extractedProducts = productsList
+                  .map((item) => Map<String, dynamic>.from(item as Map))
+                  .toList();
+            } else {
+              // Fallback to JSON array
+              final endIdx = cleaned.lastIndexOf(']');
+              if (endIdx != -1 && startBracket != -1) {
+                cleaned = cleaned.substring(startBracket, endIdx + 1);
+              }
+              final parsed = jsonDecode(cleaned) as List<dynamic>;
+              extractedProducts = parsed
+                  .map((item) => Map<String, dynamic>.from(item as Map))
+                  .toList();
             }
 
-            final parsed = jsonDecode(cleaned) as List<dynamic>;
-            extractedProducts = parsed
-                .map((item) => Map<String, dynamic>.from(item as Map))
-                .toList();
+            // Normalization helper for units
+            String normalizeUnit(String? unitStr) {
+              if (unitStr == null) return 'pcs';
+              final lower = unitStr.trim().toLowerCase();
+              if (lower.contains('box') || lower.contains('bx')) return 'box';
+              if (lower.contains('pcs') || lower.contains('pc') || lower.contains('piece') || lower.contains('unit')) return 'pcs';
+              if (lower.contains('dozen') || lower.contains('dz')) return 'dozen';
+              if (lower.contains('pkt') || lower.contains('packet') || lower.contains('pack')) return 'packet';
+              if (lower.contains('kg') || lower.contains('kilo')) return 'kg';
+              if (lower.contains('litre') || lower.contains('liter') || lower.contains('ltr') || lower == 'l') return 'ltr';
+              if (lower.contains('ml')) return 'ml';
+              if (lower.contains('gm') || lower == 'g' || lower.contains('gram')) return 'g';
+              return 'pcs';
+            }
 
             // Normalize fields
             for (final p in extractedProducts) {
@@ -748,13 +800,16 @@ Rules:
               p['stock_quantity'] = (p['stock_quantity'] as num?)?.toInt() ?? 1;
               p['gst_rate'] = (p['gst_rate'] as num?)?.toDouble() ?? 5.0;
               p['category'] = (p['category'] as String?) ?? 'General';
+              p['unit'] = normalizeUnit(p['unit'] as String?);
+              p['confidence'] = (p['confidence'] as num?)?.toDouble() ?? 85.0;
+              p['uncertain_fields'] = (p['uncertain_fields'] as List?)?.map((e) => e.toString()).toList() ?? <String>[];
               if (p['name'] == null || (p['name'] as String).isEmpty) {
                 p.remove('name');
               }
             }
             extractedProducts.removeWhere((p) => p['name'] == null);
 
-            print('✅ Extracted ${extractedProducts.length} products from bill image');
+            print('✅ Extracted ${extractedProducts.length} products from bill image. Invoice total: $invoiceTotal');
           } catch (e) {
             print('❌ Failed to parse AI response as JSON: $e\nRaw: $rawContent');
             request.response
@@ -786,6 +841,7 @@ Rules:
               'success': true,
               'products': extractedProducts,
               'count': extractedProducts.length,
+              'invoice_total': invoiceTotal,
             }))
             ..close();
         } catch (e) {
@@ -805,11 +861,13 @@ Rules:
           final products = data['products'] as List<dynamic>;
           final userIdentifier = data['userIdentifier']?.toString() ?? 'web-user';
           final shopId = data['shopId']?.toString();
+          final invoiceTotal = (data['invoice_total'] ?? data['invoiceTotal']) as num?;
           
           final result = await createProductBatchRequest(
             userIdentifier: userIdentifier,
             products: products.map((p) => Map<String, dynamic>.from(p as Map)).toList(),
             shopId: shopId,
+            invoiceTotal: invoiceTotal?.toDouble(),
           );
           
           request.response

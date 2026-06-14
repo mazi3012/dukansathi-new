@@ -165,6 +165,7 @@ final SchemanticType<Map<String, dynamic>> proposeProductsInputSchema =
   jsonSchema: {
     'type': 'object',
     'properties': {
+      'invoice_total': {'type': 'number'},
       'products': {
         'type': 'array',
         'items': {
@@ -179,6 +180,12 @@ final SchemanticType<Map<String, dynamic>> proposeProductsInputSchema =
             'gst_rate': {'type': 'number'},
             'hsn_sac_code': {'type': 'string'},
             'cost_price': {'type': 'number'},
+            'unit': {'type': 'string'},
+            'confidence': {'type': 'number'},
+            'uncertain_fields': {
+              'type': 'array',
+              'items': {'type': 'string'}
+            },
           },
           'required': ['name', 'price', 'category'],
         },
@@ -251,6 +258,7 @@ final proposeProductsTool =
     final shopId = (isValidUuid(rawShopId) ? rawShopId : null) ?? 
                    (context.context?['shopId'] as String?) ?? 
                    await getShopIdForUser(context.context?['userIdentifier'] as String?);
+    final invoiceTotal = input['invoice_total'] as num?;
 
     try {
       final enriched = await enrichProposedProductsWithRestock(
@@ -262,6 +270,7 @@ final proposeProductsTool =
         'shop_id': shopId,
         'proposed_products': enriched,
         'status': 'PENDING',
+        if (invoiceTotal != null) 'invoice_total': invoiceTotal.toDouble(),
       }).select('id').single();
 
       return {
@@ -270,6 +279,7 @@ final proposeProductsTool =
         'batchId': response['id'],
         'itemCount': enriched.length,
         'products': enriched,
+        if (invoiceTotal != null) 'invoice_total': invoiceTotal.toDouble(),
       };
     } catch (e) {
       return {
@@ -286,6 +296,7 @@ Future<Map<String, dynamic>> createProductBatchRequest({
   required String userIdentifier,
   required List<Map<String, dynamic>> products,
   String? shopId,
+  double? invoiceTotal,
 }) async {
   if (products.isEmpty) {
     return {
@@ -305,6 +316,7 @@ Future<Map<String, dynamic>> createProductBatchRequest({
       'shop_id': effectiveShopId,
       'proposed_products': enriched,
       'status': 'PENDING',
+      if (invoiceTotal != null) 'invoice_total': invoiceTotal,
     }).select('id').single();
 
     return {
@@ -312,6 +324,7 @@ Future<Map<String, dynamic>> createProductBatchRequest({
       'batchId': response['id'],
       'itemCount': enriched.length,
       'products': enriched,
+      if (invoiceTotal != null) 'invoice_total': invoiceTotal,
     };
   } catch (e) {
     return {

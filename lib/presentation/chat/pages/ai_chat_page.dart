@@ -25,6 +25,8 @@ import '../widgets/payment_confirmation_card.dart';
 import '../../../core/services/tts_service.dart';
 import '../../../core/services/connectivity_service.dart';
 import '../../../core/config.dart';
+import '../../inventory/providers/inventory_provider.dart';
+import '../../dashboard/providers/dashboard_provider.dart';
 
 
 import '../../../core/widgets/dukan_sathi_logo.dart';
@@ -1070,7 +1072,13 @@ class _AiChatPageState extends ConsumerState<AiChatPage> {
       case MessageType.aiDraftInvoice:
         return InvoiceDraftCard(payload: msg.payload as Map<String, dynamic>?);
       case MessageType.aiDraftInventory:
-        return InventoryDraftCard(payload: msg.payload);
+        return InventoryDraftCard(
+          payload: msg.payload,
+          onApproved: () {
+            ref.read(inventoryProvider.notifier).fetchProducts(forceRefresh: true);
+            ref.read(dashboardProvider.notifier).fetchDashboardData();
+          },
+        );
       case MessageType.aiAnalyticsSummary:
         return AnalyticsSummaryCard(payload: Map<String, dynamic>.from(msg.payload as Map));
       case MessageType.aiCustomerDuesList:

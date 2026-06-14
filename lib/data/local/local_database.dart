@@ -177,6 +177,9 @@ class LocalDatabase {
 
     if (oldVersion < 5) {
       try {
+        await db.execute("ALTER TABLE products ADD COLUMN cost_price REAL DEFAULT 0.0");
+      } catch (_) {}
+      try {
         await db.execute("ALTER TABLE products ADD COLUMN unit TEXT DEFAULT 'pcs'");
       } catch (_) {}
     }
@@ -258,44 +261,91 @@ class LocalDatabase {
   }
 
   bool _rowMatches(Map<String, dynamic> row, String where, List<dynamic> whereArgs) {
-    // Standardize spacing and casing
+    if (where.trim().isEmpty) return true;
+    
+    // Standardize spacing
     final normalized = where.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final parts = normalized.split(RegExp(r'\s+AND\s+', caseSensitive: false));
+    int argIndex = 0;
     
-    if (normalized == 'shop_id = ?' && whereArgs.isNotEmpty) {
-      return row['shop_id'] == whereArgs[0];
+    for (final part in parts) {
+      final normalizedPart = part.trim();
+      final normalizedPartLower = normalizedPart.toLowerCase();
+      
+      // Match "column = ?"
+      if (normalizedPartLower.endsWith(' = ?')) {
+        final column = normalizedPart.substring(0, normalizedPart.indexOf(' ')).trim().toLowerCase();
+        if (argIndex >= whereArgs.length) return false;
+        final val = whereArgs[argIndex++];
+        final rowVal = row[column];
+        if (rowVal?.toString() != val?.toString()) {
+          return false;
+        }
+      }
+      // Match "column = 'value'" or "column = "value""
+      else if (normalizedPartLower.contains(' = ')) {
+        final eqIndex = normalizedPart.indexOf('=');
+        final column = normalizedPart.substring(0, eqIndex).trim().toLowerCase();
+        var valStr = normalizedPart.substring(eqIndex + 1).trim();
+        if ((valStr.startsWith("'") && valStr.endsWith("'")) || (valStr.startsWith('"') && valStr.endsWith('"'))) {
+          valStr = valStr.substring(1, valStr.length - 1);
+        }
+        final rowVal = row[column];
+        if (rowVal?.toString() != valStr) {
+          return false;
+        }
+      }
+      // Match "column < ?"
+      else if (normalizedPartLower.endsWith(' < ?')) {
+        final column = normalizedPart.substring(0, normalizedPart.indexOf(' ')).trim().toLowerCase();
+        if (argIndex >= whereArgs.length) return false;
+        final val = whereArgs[argIndex++];
+        final rowVal = row[column];
+        if (rowVal == null || val == null) return false;
+        final rowNum = num.tryParse(rowVal.toString()) ?? 0;
+        final valNum = num.tryParse(val.toString()) ?? 0;
+        if (rowNum >= valNum) {
+          return false;
+        }
+      }
+      // Match "column >= ?"
+      else if (normalizedPartLower.endsWith(' >= ?')) {
+        final column = normalizedPart.substring(0, normalizedPart.indexOf(' ')).trim().toLowerCase();
+        if (argIndex >= whereArgs.length) return false;
+        final val = whereArgs[argIndex++];
+        final rowVal = row[column];
+        if (rowVal == null || val == null) return false;
+        if (rowVal.toString().compareTo(val.toString()) < 0) {
+          return false;
+        }
+      }
+      // Match "column LIKE ?"
+      else if (normalizedPartLower.endsWith(' like ?')) {
+        final column = normalizedPart.substring(0, normalizedPart.indexOf(' ')).trim().toLowerCase();
+        if (argIndex >= whereArgs.length) return false;
+        final val = whereArgs[argIndex++].toString().replaceAll('%', '').replaceAll('"', '').toLowerCase();
+        final rowVal = row[column];
+        final rowValStr = rowVal is String ? rowVal : jsonEncode(rowVal ?? {});
+        if (!rowValStr.toLowerCase().contains(val)) {
+          return false;
+        }
+      }
+      // Match "column NOT IN (?, ?, ...)"
+      else if (normalizedPartLower.contains(' not in (')) {
+        final colIndex = normalizedPartLower.indexOf(' not in');
+        final column = normalizedPart.substring(0, colIndex).trim().toLowerCase();
+        final placeholderCount = '?'.allMatches(normalizedPart).length;
+        if (argIndex + placeholderCount > whereArgs.length) return false;
+        final excludedVals = whereArgs.sublist(argIndex, argIndex + placeholderCount).map((e) => e.toString()).toSet();
+        argIndex += placeholderCount;
+        
+        final rowVal = row[column];
+        if (excludedVals.contains(rowVal?.toString())) {
+          return false;
+        }
+      }
     }
     
-    if (normalized == 'id = ?' && whereArgs.isNotEmpty) {
-      return row['id'] == whereArgs[0];
-    }
-    
-    if (normalized == 'shop_id = ? AND stock_quantity < ?' && whereArgs.length >= 2) {
-      final shopId = whereArgs[0];
-      final minStock = whereArgs[1] as num;
-      return row['shop_id'] == shopId && (row['stock_quantity'] as num? ?? 0) < minStock;
-    }
-    
-    if (normalized == 'shop_id = ? AND timestamp >= ?' && whereArgs.length >= 2) {
-      final shopId = whereArgs[0];
-      final since = whereArgs[1].toString();
-      final ts = row['timestamp']?.toString() ?? '';
-      return row['shop_id'] == shopId && ts.compareTo(since) >= 0;
-    }
-    
-    if (normalized == 'shop_id = ? AND barcode = ?' && whereArgs.length >= 2) {
-      return row['shop_id'] == whereArgs[0] && row['barcode'] == whereArgs[1];
-    }
-    
-    if (normalized == 'shop_id = ? AND metadata LIKE ?' && whereArgs.length >= 2) {
-      final shopId = whereArgs[0];
-      final barcodeQuery = whereArgs[1].toString().replaceAll('%', '').replaceAll('"', '');
-      if (row['shop_id'] != shopId) return false;
-      final metadata = row['metadata'];
-      final metadataStr = metadata is String ? metadata : jsonEncode(metadata ?? {});
-      return metadataStr.replaceAll('"', '').contains(barcodeQuery);
-    }
-    
-    // Fallback search
     return true;
   }
 

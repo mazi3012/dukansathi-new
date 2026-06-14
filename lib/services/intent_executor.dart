@@ -84,7 +84,8 @@ class IntentExecutor {
         isService: false,
         gstRate: gstRate,
         hsnSacCode: hsn,
-        costPrice: price * 0.7, // fallback cost price
+        costPrice: (json['cost_price'] as num?)?.toDouble() ?? (price * 0.7),
+        unit: json['unit']?.toString() ?? 'pcs',
       );
 
       // Do NOT save to DB here. This is a draft, wait for UI approval!
